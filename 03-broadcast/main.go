@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,11 +16,6 @@ type TopologyMessage struct {
 }
 
 type BroadcastMessage struct {
-	Type    string `json:"type"`
-	Message int64  `json:"message"`
-}
-
-type GossipMessage struct {
 	Type    string `json:"type"`
 	Message int64  `json:"message"`
 }
@@ -39,9 +35,8 @@ func main() {
 	pending := make(map[int64]map[string]struct{})
 	var neighbors []string
 
-	gossipMessage := func(msg maelstrom.Message, message int64) error {
+	broadcastMessage := func(message int64) error {
 
-		// Broadcast gossip to neighbours until all successful
 		pendingNodes := make(map[string]struct{}, len(neighbors))
 		for _, node := range neighbors {
 			pendingNodes[node] = struct{}{}
@@ -57,7 +52,7 @@ func main() {
 
 			for node := range pendingNodes {
 				_ = n.Send(node, map[string]any{
-					"type":    "gossip",
+					"type":    "broadcast",
 					"message": message,
 				})
 			}
@@ -89,45 +84,30 @@ func main() {
 			return err
 		}
 
-		// Receive and acknowledge gossip
 		messagesMtx.Lock()
 		_, seen := messages[body.Message]
 		if !seen {
 			messages[body.Message] = struct{}{}
-			go gossipMessage(msg, body.Message)
+			go broadcastMessage(body.Message)
 		}
 		messagesMtx.Unlock()
 
+		// Differentiate between broadcasts from nodes 
+		// and external broadcasts
+		if strings.HasPrefix(msg.Src, "n") {
+			return n.Send(msg.Src, map[string]any{
+				"type":    "broadcast_ok",
+				"message": body.Message,
+			})
+		}
 
 		return n.Reply(msg, map[string]any{
 			"type": "broadcast_ok",
 		})
 	})
 
-	n.Handle("gossip", func(msg maelstrom.Message) error {
-		var body GossipMessage
-		if err := json.Unmarshal(msg.Body, &body); err != nil {
-			return err
-		}
-		// Receive and acknowledge gossip
-		messagesMtx.Lock()
-		_, seen := messages[body.Message]
-		if !seen {
-			messages[body.Message] = struct{}{}
-			go gossipMessage(msg, body.Message)
-		}
-		messagesMtx.Unlock()
-
-		n.Send(msg.Src, map[string]any{
-			"type":    "gossip_ack",
-			"message": body.Message,
-		})
-
-		return nil
-	})
-
-	n.Handle("gossip_ack", func(msg maelstrom.Message) error {
-		var body GossipMessage
+	n.Handle("broadcast_ok", func(msg maelstrom.Message) error {
+		var body BroadcastMessage
 		if err := json.Unmarshal(msg.Body, &body); err != nil {
 			return err
 		}
