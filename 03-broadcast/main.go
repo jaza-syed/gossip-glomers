@@ -40,45 +40,30 @@ func main() {
 	var neighbors []string
 
 	gossipMessage := func(msg maelstrom.Message, message int64) error {
-		// Receive and acknowledge gossip
-		messagesMtx.Lock()
-		_, seen := messages[message]
-		if !seen {
-			messages[message] = struct{}{}
-		}
-		messagesMtx.Unlock()
-		if (msg.Type() == "gossip") {
-			n.Send(msg.Src, map[string]any{
-				"type":    "gossip_ack",
-				"message": message,
-			})
-		}
 
 		// Broadcast gossip to neighbours until all successful
-		if !seen {
-			pendingNodes := make(map[string]struct{}, len(neighbors))
-			for _, node := range neighbors {
-				pendingNodes[node] = struct{}{}
+		pendingNodes := make(map[string]struct{}, len(neighbors))
+		for _, node := range neighbors {
+			pendingNodes[node] = struct{}{}
+		}
+		pendingMtx.Lock()
+		pending[message] = pendingNodes
+		pendingMtx.Unlock()
+
+		for len(pendingNodes) > 0 {
+			pendingMtx.RLock()
+			pendingNodes = pending[message]
+			pendingMtx.RUnlock()
+
+			for node := range pendingNodes {
+				_ = n.Send(node, map[string]any{
+					"type":    "gossip",
+					"message": message,
+				})
 			}
-			pendingMtx.Lock()
-			pending[message] = pendingNodes
-			pendingMtx.Unlock()
 
-			for len(pendingNodes) > 0 {
-				pendingMtx.RLock()
-				pendingNodes = pending[message]
-				pendingMtx.RUnlock()
-
-				for node := range pendingNodes {
-					_ = n.Send(node, map[string]any{
-						"type":    "gossip",
-						"message": message,
-					})
-				}
-
-				if len(pendingNodes) > 0 {
-					time.Sleep(time.Duration(retryInterval) * time.Second)
-				}
+			if len(pendingNodes) > 0 {
+				time.Sleep(time.Duration(retryInterval) * time.Second)
 			}
 		}
 
@@ -104,7 +89,15 @@ func main() {
 			return err
 		}
 
-		go gossipMessage(msg, body.Message);
+		// Receive and acknowledge gossip
+		messagesMtx.Lock()
+		_, seen := messages[body.Message]
+		if !seen {
+			messages[body.Message] = struct{}{}
+			go gossipMessage(msg, body.Message)
+		}
+		messagesMtx.Unlock()
+
 
 		return n.Reply(msg, map[string]any{
 			"type": "broadcast_ok",
@@ -116,8 +109,20 @@ func main() {
 		if err := json.Unmarshal(msg.Body, &body); err != nil {
 			return err
 		}
+		// Receive and acknowledge gossip
+		messagesMtx.Lock()
+		_, seen := messages[body.Message]
+		if !seen {
+			messages[body.Message] = struct{}{}
+			go gossipMessage(msg, body.Message)
+		}
+		messagesMtx.Unlock()
 
-		go gossipMessage(msg, body.Message)
+		n.Send(msg.Src, map[string]any{
+			"type":    "gossip_ack",
+			"message": body.Message,
+		})
+
 		return nil
 	})
 
