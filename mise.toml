@@ -1,0 +1,4 @@
+[tools]
+go = "1.26.1"
+java = "temurin-21"
+"github:jepsen-io/maelstrom" = { version = "0.2.4", asset_pattern = "maelstrom.tar.bz2" }
